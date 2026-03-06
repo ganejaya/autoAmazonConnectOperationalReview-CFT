@@ -13,6 +13,14 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Checkout code repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.client_payload.lambda_repo }}
+          ref: ${{ github.event.client_payload.lambda_branch }}
+          token: ${{ secrets.CODE_REPO_PAT }}
+          path: _lambda_source
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -31,10 +39,7 @@ jobs:
       - name: Update CFT template with latest Lambda code
         run: |
           python3 scripts/update_cft_lambda.py \
-            --remote \
-            --repo-url "https://github.com/${{ github.event.client_payload.lambda_repo }}.git" \
-            --branch "${{ github.event.client_payload.lambda_branch }}" \
-            --remote-path "${{ github.event.client_payload.lambda_file_path }}" \
+            --lambda-source "_lambda_source/${{ github.event.client_payload.lambda_file_path }}" \
             --cft-template "CFT-AmazonConnectOperationsReview.yml" \
             --no-backup
 
