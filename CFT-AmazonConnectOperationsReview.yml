@@ -89,6 +89,7 @@ Resources:
           S3_REPORTING_BUCKET: !Ref AmazonS3ForReports
       Code:
         ZipFile: |
+          # Amazon Connect Operational Review - Monolithic Lambda Function
           import boto3
           import json
           import logging
@@ -97,7 +98,7 @@ Resources:
           import traceback
           from botocore.exceptions import ClientError
           from html import escape
-          from datetime import datetime
+          from datetime import datetime, timezone
           from datetime import datetime, timedelta
           from collections import defaultdict
           import statistics
@@ -112,9 +113,6 @@ Resources:
           # Format the datetime object into a string including the timezone name
           currentDateAndTime = datetime.now()
           datetime_string = currentDateAndTime.strftime("%Y-%m-%d %H:%M:%S %Z%z")
-
-          # Intialize (log group, AWS region, days back)
-          #log_group = f'/aws/connect/ganesh-test-us-east-1'
 
           # Initialize Connect client
           connect_client = boto3.client('connect')
@@ -138,34 +136,34 @@ Resources:
           def parse_connect_instance_arn(instance_arn):
               """
                   ARN format: arn:aws:connect:region:account-id:instance/instance-id
-              
+
               Args:
                   instance_arn (str): Amazon Connect instance ARN
-              
+
               Returns:
                   dict: Contains instance_id, aws_region, account_id, and other components
               """
-              
+
               if not instance_arn or not isinstance(instance_arn, str):
                   raise ValueError("Invalid ARN provided in envonment variable - CONNECT_INSTANCE_ARN")
-              
+
               # Split ARN by colons
               arn_parts = instance_arn.split(':')
-              
+
               if len(arn_parts) < 6 or arn_parts[0] != 'arn' or arn_parts[2] != 'connect':
                   raise ValueError(f"Invalid Connect instance ARN format: {instance_arn}")
-              
+
               # Extract components
               aws_region = arn_parts[3]
               account_id = arn_parts[4]
               resource_part = arn_parts[5]  # instance/instance-id
-              
+
               # Extract instance ID from resource part
               if not resource_part.startswith('instance/'):
                   raise ValueError(f"Invalid resource type in ARN: {resource_part}")
-              
+
               instance_id = resource_part.split('/', 1)[1]
-              
+
               return {
                   'instance_id': instance_id,
                   'aws_region': aws_region,
@@ -182,15 +180,15 @@ Resources:
               try:
                   service_quotas = boto3.client('service-quotas')
                   quotas = []
-                  
+
                   # Use paginator to get all quotas
                   paginator = service_quotas.get_paginator('list_service_quotas')
-                  
+
                   for page in paginator.paginate(ServiceCode='connect'):
                       quotas.extend(page['Quotas'])
-                  
+
                   return quotas
-              
+
               except ClientError as e:
                   logger.error(f"Error retrieving service quotas: {e}")
                   return []
@@ -208,20 +206,20 @@ Resources:
 
           """Get Current utilization for Amazon Connect"""
           def current_utilization (instance_id, metric_name):
-             
+
               try:
                   matched_value = metric_name
                   if matched_value == "ContactFlows":
                       # List all contact flows
                           response = connect_client.list_contact_flows(InstanceId=instance_id)
                           metric_usage = len(response['ContactFlowSummaryList'])
-                  
+
                   # Get the current number of Users
                   elif matched_value == "Users":
                       # List all users
                           response = connect_client.list_users(InstanceId=instance_id)
                           metric_usage = len(response['UserSummaryList'])
-                  
+
                   # Get the current number of Queues
                   elif matched_value == "Queues":
                       # List all queues
@@ -232,7 +230,7 @@ Resources:
                       # List all routing profiles
                           response = connect_client.list_routing_profiles(InstanceId=instance_id)
                           metric_usage = len(response['RoutingProfileSummaryList'])
-                  
+
                   elif matched_value == "SecurityProfiles":
                       # List all security profiles
                           response = connect_client.list_security_profiles(InstanceId=instance_id)
@@ -242,7 +240,7 @@ Resources:
                       # List all hours of operation
                           response = connect_client.list_hours_of_operations(InstanceId=instance_id)
                           metric_usage = len(response['HoursOfOperationSummaryList'])
-                  
+
                   elif matched_value == "Prompts":
                       # List all prompts
                           response = connect_client.list_prompts(InstanceId=instance_id)
@@ -252,12 +250,12 @@ Resources:
                       # List all lex bots
                           response = connect_client.list_bots(InstanceId=instance_id, LexVersion='V1')
                           metric_usage = len(response['LexBots'])
-                  
+
                   elif matched_value == "LexBotsV2":
                       # List all lex bots
                           response = connect_client.list_bots(InstanceId=instance_id, LexVersion='V2')
                           metric_usage = len(response['LexBots'])
-                  
+
                   elif matched_value == "PhoneNumbers":
                       # List all phone numbers
                           response = connect_client.list_phone_numbers(InstanceId=instance_id)
@@ -272,12 +270,12 @@ Resources:
                       # List all contact flow modules
                           response = connect_client.list_contact_flow_modules(InstanceId=instance_id)
                           metric_usage = len(response['ContactFlowModulesSummaryList'])
-                  
+
                   elif matched_value == "QuickConnects":
                       # List all quick connects
                           response = connect_client.list_quick_connects(InstanceId=instance_id)
                           metric_usage = len(response['QuickConnectSummaryList'])
-                  
+
                   else:
                   # Handle unexpected metric_name values
                       error = f"Unknown metric name: {metric_name}"
@@ -298,7 +296,7 @@ Resources:
                           'message': str(e)
                       })
                   }
-              
+
               except Exception as e:
                   logger.error(f"Unexpected error: {e}")
                   return {
@@ -313,76 +311,76 @@ Resources:
           def get_connect_service_quota(instance_id_arn, quota_code):
               """Retrieve all Amazon Connect service quotas"""
               try:
-                 
+
                   response = quota_client.get_service_quota(
                   ServiceCode='connect',
                   QuotaCode=quota_code,
                   ContextId=instance_id_arn # Optional, for resource-level quotas
                   )
-                  
+
                   quota_value = response['Quota']['Value']
                   quota_unit = response['Quota']['Unit']
 
                   logger.debug(f"For Amazon Connect quota_code {quota_code} value is {quota_value} with unit {quota_unit}")
 
                   return quota_value
-              
+
               except ClientError as e:
                   logger.error(f"Error retrieving service quotas: {e}")
                   return []
 
           """class for segregating JSON data."""
           class JSONSegregator:
-              
+
               def __init__(self, data: List[Dict[str, Any]]):
                   self.data = data
-              
+
               def by_key(self, key: str, include_missing: bool = True) -> Dict[str, List[Dict]]:
                   """Segregate by a single key."""
                   result = defaultdict(list)
-                  
+
                   for item in self.data:
                       if key in item:
                           value = str(item[key])  # Convert to string for consistent keys
                           result[value].append(item)
                       elif include_missing:
                           result['_missing'].append(item)
-                  
+
                   return dict(result)
-              
+
               def by_value_range(self, key: str, ranges: List[tuple]) -> Dict[str, List[Dict]]:
                   """Segregate by value ranges."""
                   result = defaultdict(list)
-                  
+
                   for item in self.data:
                       if key in item:
                           value = item[key]
                           assigned = False
-                          
+
                           for range_name, min_val, max_val in ranges:
                               if min_val <= value < max_val:
                                   result[range_name].append(item)
                                   assigned = True
                                   break
-                          
+
                           if not assigned:
                               result['_out_of_range'].append(item)
                       else:
                           result['_missing_key'].append(item)
-                  
+
                   return dict(result)
-              
+
               def by_custom_function(self, func) -> Dict[str, List[Dict]]:
                   """Segregate using custom function."""
                   result = defaultdict(list)
-                  
+
                   for item in self.data:
                       try:
                           group_key = func(item)
                           result[str(group_key)].append(item)
                       except Exception as e:
                           result[f'_error_{type(e).__name__}'].append(item)
-                  
+
                   return dict(result)
 
           """Segregate data based on a specific JSON element/key."""
@@ -391,12 +389,12 @@ Resources:
               Args:
                   data (list): List of dictionaries (JSON objects)
                   key (str): The key to segregate by
-              
+
               Returns:
                   dict: Dictionary with segregated data
               """
               segregated = defaultdict(list)
-              
+
               for item in data:
                   if key in item:
                       value = item[key]
@@ -404,7 +402,7 @@ Resources:
                   else:
                       # Handle items without the key
                       segregated['_missing_key'].append(item)
-              
+
               return dict(segregated)
 
           """Segregate data based on multiple JSON elements."""
@@ -413,12 +411,12 @@ Resources:
               Args:
                   data (list): List of dictionaries
                   criteria (list): List of keys to create composite grouping
-              
+
               Returns:
                   dict: Dictionary with segregated data using composite keys
               """
               segregated = defaultdict(list)
-              
+
               for item in data:
                   # Create composite key from multiple criteria
                   key_parts = []
@@ -427,21 +425,22 @@ Resources:
                           key_parts.append(str(item[criterion]))
                       else:
                           key_parts.append('_missing')
-                  
+
                   composite_key = ' | '.join(key_parts)
                   segregated[composite_key].append(item)
-              
+
               return dict(segregated)
+
           """Comprehensive analyze CloudWatch Metrics - Concurrent Calls"""
           def summarize_concurrent_calls(instance_id, days_back):
               html_content = f"<b>Summarize concurrent calls for Amazon Connect over the last {days_back} days</b><br>"
-              
+
               # Calculate time range for last 2 weeks
               end_time = datetime.utcnow() +  timedelta(days=1)
               start_time = end_time - timedelta(days=1)
-              
+
               logger.debug(f"\n Retrieving concurrent calls data from {start_time.date()} to {end_time.date()}")
-              
+
               try:
                   # Get concurrent calls metrics
                   response = cloudwatch_client.get_metric_statistics(
@@ -455,50 +454,50 @@ Resources:
                       Period=3600,  # 1-hour periods for detailed analysis
                       Statistics=['Average', 'Maximum', 'Minimum']
                   )
-                  
+
                   # Process data by day
                   daily_stats = defaultdict(lambda: {'hourly_avg': [], 'hourly_max': [], 'hourly_min': []})
-                  
+
                   for datapoint in response['Datapoints']:
                       date = datapoint['Timestamp'].date()
                       daily_stats[date]['hourly_avg'].append(datapoint['Average'])
                       daily_stats[date]['hourly_max'].append(datapoint['Maximum'])
                       daily_stats[date]['hourly_min'].append(datapoint['Minimum'])
-                  
+
                   # Calculate overall statistics
                   all_averages = []
                   all_maximums = []
                   all_minimums = []
-                  
+
                   logger.debug(f"\n{'='*60}")
                   logger.debug(f"CONCURRENT CALLS SUMMARY - LAST 2 WEEKS")
                   logger.debug(f"Instance ID: {instance_id}")
                   logger.debug(f"{'='*60}")
-                  
+
                   # Daily breakdown
                   for date in sorted(daily_stats.keys()):
                       stats = daily_stats[date]
-                      
+
                       daily_avg = sum(stats['hourly_avg']) / len(stats['hourly_avg'])
                       daily_max = max(stats['hourly_max'])
                       daily_min = min(stats['hourly_min'])
-                      
+
                       all_averages.extend(stats['hourly_avg'])
                       all_maximums.extend(stats['hourly_max'])
                       all_minimums.extend(stats['hourly_min'])
-                      
+
                       logger.debug(f"\n{date.strftime('%A, %B %d, %Y')}:")
                       logger.debug(f"  Daily Average: {daily_avg:.2f} calls")
                       logger.debug(f"  Peak (Maximum): {daily_max:.0f} calls")
                       logger.debug(f"  Lowest (Minimum): {daily_min:.0f} calls")
                       logger.debug(f"  Data points: {len(stats['hourly_avg'])} hours")
-                  
+
                   # Overall 2-week summary
                   if all_averages:
                       overall_avg = sum(all_averages) / len(all_averages)
                       overall_max = max(all_maximums)
                       overall_min = min(all_minimums)
-                      
+
                       logger.debug(f"\n{'='*60}")
                       logger.debug(f"OVERALL 2-WEEK SUMMARY")
                       logger.debug(f"{'='*60}")
@@ -506,16 +505,16 @@ Resources:
                       html_content += f"<br>Absolute Peak: {overall_max:.0f} concurrent calls"
                       html_content += f"<br>Absolute Minimum: {overall_min:.0f} concurrent calls"
                       html_content += f"<br>Total data points: {len(all_averages)} hours"
-                      
+
                       # Additional insights
                       html_content += f"<br><br>INSIGHTS:"
                       html_content += f"<br>- Average daily variation: {(overall_max - overall_min):.0f} calls"
                       html_content += f"<br>- Peak utilization was {(overall_max / overall_avg - 1) * 100:.1f}% above average"
-                      
+
                   else:
                       html_content += f"<br>No data available for the specified time period."
                       logger.debug("\nNo data available for the specified time period.")
-                      
+
               except Exception as e:
                   logger.error(f"Error retrieving metrics: {str(e)}")
                   html_content = f"\nError retrieving metrics: {str(e)}"
@@ -529,10 +528,10 @@ Resources:
               # Calculate time range for last 2 weeks
               end_time = datetime.utcnow()
               start_time = end_time - timedelta(days_back)
-              
+
               logger.debug(f"Retrieving missed calls data from {start_time.date()} to {end_time.date()}")
               logger.debug(f"Instance ID: {instance_id}")
-              
+
               try:
                   # Get missed calls metrics with daily granularity
                   response = cloudwatch_client.get_metric_statistics(
@@ -547,28 +546,28 @@ Resources:
                       Period=86400,  # Daily statistics (24 hours)
                       Statistics=['Sum']
                   )
-                  
+
                   # Process daily data
                   daily_data = []
                   total_missed_calls = 0
-                  
+
                   for datapoint in sorted(response['Datapoints'], key=lambda x: x['Timestamp']):
                       date = datapoint['Timestamp'].date()
                       missed_calls = int(datapoint['Sum'])
                       total_missed_calls += missed_calls
                       daily_data.append((date, missed_calls))
-                  
+
                   logger.debug(f"\n{'='*60}")
                   logger.debug(f"MISSED CALLS SUMMARY - LAST 2 WEEKS")
                   logger.debug(f"{'='*60}")
-                  
+
                   # Daily breakdown
                   logger.debug(f"\nDAILY BREAKDOWN:")
                   logger.debug(f"{'-'*40}")
                   for date, count in daily_data:
                       day_name = date.strftime('%A')
                       logger.debug(f"{date} ({day_name}): {count:,} missed calls")
-                  
+
                   # Calculate statistics
                   if daily_data:
                       missed_calls_counts = [count for _, count in daily_data]
@@ -576,10 +575,10 @@ Resources:
                       daily_median = statistics.median(missed_calls_counts)
                       max_missed = max(missed_calls_counts)
                       min_missed = min(missed_calls_counts)
-                      
+
                       # Find peak day
                       peak_day = max(daily_data, key=lambda x: x[1])
-                      
+
                       logger.debug(f"\n{'='*60}")
                       logger.debug(f"SUMMARY STATISTICS")
                       logger.debug(f"{'='*60}")
@@ -589,36 +588,36 @@ Resources:
                       html_content+=f"<br>Highest single day: {max_missed:,} missed calls"
                       html_content+=f"<br>Lowest single day: {min_missed:,} missed calls"
                       html_content+=f"<br>Peak day: {peak_day[0]} ({peak_day[0].strftime('%A')}) with {peak_day[1]:,} missed calls"
-                      
+
                       # Weekly comparison
                       week1_data = [count for date, count in daily_data if date < start_time.date() + timedelta(days=7)]
                       week2_data = [count for date, count in daily_data if date >= start_time.date() + timedelta(days=7)]
-                      
+
                       if week1_data and week2_data:
                           week1_total = sum(week1_data)
                           week2_total = sum(week2_data)
                           week1_avg = statistics.mean(week1_data)
                           week2_avg = statistics.mean(week2_data)
-                          
+
                           change_percent = ((week2_total - week1_total) / week1_total) * 100 if week1_total > 0 else 0
-                          
+
                           logger.debug(f"\n{'='*60}")
                           logger.debug(f"WEEKLY COMPARISON")
                           logger.debug(f"{'='*60}")
                           logger.debug(f"Week 1 total: {week1_total:,} missed calls (avg: {week1_avg:.1f}/day)")
                           logger.debug(f"Week 2 total: {week2_total:,} missed calls (avg: {week2_avg:.1f}/day)")
                           logger.debug(f"Week-over-week change: {change_percent:+.1f}%")
-                          
+
                           if change_percent > 10:
                               logger.debug("⚠️  Significant increase in missed calls detected!")
                           elif change_percent < -10:
                               logger.debug("✅ Significant improvement in missed calls!")
-                  
+
                   else:
                       logger.debug("No missed calls data available for the specified time period.")
                       html_content+=f"<br>No missed calls data available for the specified time period."
                   return html_content
-                      
+
               except Exception as e:
                   logger.error(f"Error retrieving metrics: {str(e)}")
                   html_content+=f"<br>Error retrieving metrics: {str(e)}"
@@ -630,10 +629,10 @@ Resources:
               # Calculate time range
               end_time = datetime.utcnow()
               start_time = end_time - timedelta(days=days_back)
-              
+
               logger.debug(f"Analyzing ThrottledCalls from {start_time.date()} to {end_time.date()}")
               logger.debug(f"Instance ID: {instance_id}")
-              
+
               try:
                   # Get ThrottledCalls metrics
                   response = cloudwatch_client.get_metric_statistics(
@@ -648,36 +647,36 @@ Resources:
                       Period=3600,  # 1-hour intervals
                       Statistics=['Sum', 'Maximum']
                   )
-                  
+
                   datapoints = response['Datapoints']
-                  
+
                   if not datapoints:
                       logger.debug("✅ No throttled calls found in the specified time period!")
                       logger.debug("This indicates your instance is operating within capacity limits.")
                       html_content+=f"<br>No throttled calls found in the specified time period!"
                       html_content+=f"<br>Your instance is operating well within capacity limits"
                       return html_content
-                  
+
                   # Sort datapoints by timestamp
                   sorted_data = sorted(datapoints, key=lambda x: x['Timestamp'])
-                  
+
                   logger.debug(f"\n{'='*70}")
                   logger.debug(f"THROTTLED CALLS ANALYSIS - LAST {days_back} DAYS")
                   logger.debug(f"{'='*70}")
-                  
+
                   # Calculate overall statistics
                   total_throttled = sum(int(dp['Sum']) for dp in sorted_data)
                   hourly_counts = [int(dp['Sum']) for dp in sorted_data]
                   max_hourly = max(hourly_counts)
                   avg_hourly = statistics.mean(hourly_counts) if hourly_counts else 0
-                  
+
                   logger.debug(f"\nOVERALL STATISTICS:")
                   logger.debug(f"  Total throttled calls: {total_throttled:,}")
                   logger.debug(f"  Average per hour: {avg_hourly:.2f}")
                   logger.debug(f"  Maximum in single hour: {max_hourly:,}")
                   logger.debug(f"  Hours with throttling: {len([c for c in hourly_counts if c > 0])}")
                   logger.debug(f"  Total hours analyzed: {len(hourly_counts)}")
-                  
+
                   # Severity assessment
                   logger.debug(f"\nSEVERITY ASSESSMENT:")
                   if total_throttled == 0:
@@ -691,13 +690,13 @@ Resources:
                   else:
                       logger.debug("  🚨 CRITICAL - Severe throttling (> 1000 calls)")
                       logger.debug("     IMMEDIATE ACTION REQUIRED!")
-                  
+
                   # Daily breakdown
                   daily_stats = defaultdict(int)
                   for dp in sorted_data:
                       date = dp['Timestamp'].date()
                       daily_stats[date] += int(dp['Sum'])
-                  
+
                   logger.debug(f"\nDAILY BREAKDOWN:")
                   logger.debug(f"{'-'*50}")
                   for date in sorted(daily_stats.keys()):
@@ -705,7 +704,7 @@ Resources:
                       day_name = date.strftime('%A')
                       status = "🚨" if count > 100 else "⚠️" if count > 10 else "✅" if count == 0 else "⚠️"
                       logger.debug(f"  {date} ({day_name}): {count:,} throttled calls {status}")
-                  
+
                   # Peak hours analysis
                   peak_hours = sorted(sorted_data, key=lambda x: x['Sum'], reverse=True)[:5]
                   if peak_hours and peak_hours[0]['Sum'] > 0:
@@ -715,24 +714,24 @@ Resources:
                           if dp['Sum'] > 0:
                               timestamp = dp['Timestamp'].strftime('%Y-%m-%d %H:%M UTC')
                               print(f"  {i}. {timestamp}: {int(dp['Sum']):,} throttled calls")
-                  
+
                   # Recommendations
                   print(f"\n{'='*70}")
                   print(f"RECOMMENDATIONS")
                   print(f"{'='*70}")
-                  
+
                   if total_throttled > 0:
                       logger.debug("🔧 IMMEDIATE ACTIONS:")
                       logger.debug("  1. Review current service quotas for your Connect instance")
                       logger.debug("  2. Consider requesting quota increases via AWS Support")
                       logger.debug("  3. Analyze call patterns during peak throttling periods")
                       logger.debug("  4. Implement call queuing or retry mechanisms")
-                      
+
                       logger.debug("\n📊 MONITORING IMPROVEMENTS:")
                       logger.debug("  1. Set up CloudWatch alarms for ThrottledCalls metric")
                       logger.debug("  2. Monitor ConcurrentCalls to predict throttling")
                       logger.debug("  3. Track CallsPerInterval for capacity planning")
-                      
+
                       logger.debug("\n⚡ CAPACITY OPTIMIZATION:")
                       logger.debug("  1. Distribute call load across multiple instances if possible")
                       logger.debug("  2. Implement intelligent call routing")
@@ -747,6 +746,7 @@ Resources:
               except Exception as e:
                   logger.error(f"❌ Error retrieving ThrottledCalls metrics: {str(e)}")
                   html_content+=f"<br>Error retrieving metrics: {str(e)}"
+
           """Lookup CloudTrail events for Amazon Connect"""
           def lookup_connect_cloudtrail_events(account_id, days_back, aws_region):
               """
@@ -754,18 +754,18 @@ Resources:
                   instance_id (str): Connect instance ID (optional)
                   days_back : days back for event lookup
                   region (str): AWS region
-              
+
               Returns:
                   list: Connect CloudTrail events
               """
               end_time = datetime.utcnow()
               start_time = end_time - timedelta(hours=24*days_back)
-              
+
               logger.debug(f"📅 Start Time for lookup_connect_cloudtrail_events: {start_time}")
               logger.debug(f"📅 End Time for lookup_connect_cloudtrail_events: {end_time}")
 
               connect_events = []
-              
+
               try:
                   # Lookup attributes for Connect events
                   lookup_attributes = [
@@ -774,17 +774,17 @@ Resources:
                           'AttributeValue': 'connect.amazonaws.com'
                       }
                   ]
-                  
+
                   # Add instance-specific filter if provided
                  # if instance_id:
                  #     lookup_attributes.append({
                  #         'AttributeKey': 'ResourceName',
                  #         'AttributeValue': instance_id
                  #     })
-                  
+
                   # Lookup events
                   paginator = cloudtrail_client.get_paginator('lookup_events')
-                  
+
                   for page in paginator.paginate(
                       LookupAttributes=lookup_attributes,
                       StartTime=start_time,
@@ -795,19 +795,19 @@ Resources:
                           event_data = parse_connect_event(event)
                           if event_data:
                               connect_events.append(event_data)
-                  
+
                   return connect_events
-                  
+
               except ClientError as e:
                   logger.debug(f"Error looking up CloudTrail events: {e}")
                   return []
 
           """Parse and enrich Connect CloudTrail event"""
           def parse_connect_event(event):
-              
+
               try:
                   cloud_trail_event = json.loads(event.get('CloudTrailEvent', '{}'))
-                  
+
                   # Extract key information
                   event_data = {
                       'eventId': event.get('EventId'),
@@ -827,7 +827,7 @@ Resources:
                   }
 
                   return event_data
-                  
+
               except Exception as e:
                   print(f"Error parsing event: {e}")
                   return None
@@ -867,7 +867,7 @@ Resources:
 
                   for category, count in category_counts.items():
                       html_content += f"""<tr><td>{category}</td><td>{count}</td></tr>"""
-                      
+
                   html_content += f"""</table>"""
 
                   if total_throttled_count > 0:
@@ -887,7 +887,7 @@ Resources:
           """HTML Report upload to S3 bucket"""
           def upload_string_to_s3(string_data, bucket_name, object_key, content_type):
               s3_client = boto3.client('s3')
-              
+
               try:
                   response = s3_client.put_object(
                       Bucket=bucket_name,
@@ -895,7 +895,7 @@ Resources:
                       Body=string_data,
                       ContentType=content_type
                   )
-                  print(f"Report uploaded successfully to https://{bucket_name}.s3.amazonaws.com/{object_key}. ETag: {response['ETag']}")
+                  logger.info(f"Report uploaded successfully to https://{bucket_name}.s3.amazonaws.com/{object_key}. ETag: {response['ETag']}")
                   return True
               except ClientError as e:
                   print(f"Error uploading to S3: {e}")
@@ -907,7 +907,7 @@ Resources:
                   # Describe the instance
                   response = connect_client.describe_instance(InstanceId=instance_id)
                   instance = response['Instance']
-                  
+
                   # Generate HTML
                   html_content = f"""
                   <!DOCTYPE html>
@@ -942,7 +942,7 @@ Resources:
                           </table>
                       </div>
                   """
-                  
+
                   # Add inbound/outbound calls configuration
                   if 'InboundCallsEnabled' in instance or 'OutboundCallsEnabled' in instance:
                       html_content += """
@@ -977,19 +977,20 @@ Resources:
                           hasConnectReplica = "no"
 
                   return html_content
-                  
+
               except Exception as e:
                   return f"<html><body><h1>Error</h1><p>Error describing instance: {escape(str(e))}</p></body></html>"
+
           """Get all phone numbers for the instance"""
           def get_phone_numbers_with_basic_details(connect_client, instance_id):
               """Get all phone numbers with basic information"""
-              
+
               phone_numbers = []
-              
+
               try:
                   # Use ListPhoneNumbersV2 for accurate type identification
                   paginator = connect_client.get_paginator('list_phone_numbers_v2')
-                  
+
                   for page in paginator.paginate(InstanceId=instance_id):
                       for number_summary in page.get('ListPhoneNumbersSummaryList', []):
                           try:
@@ -997,7 +998,7 @@ Resources:
                               detailed_info = connect_client.describe_phone_number(
                                   PhoneNumberId=number_summary['PhoneNumberId']
                               )
-                              
+
                               phone_number_carrier = validate_phone_number_for_connect(number_summary['PhoneNumber'], number_summary['PhoneNumberCountryCode'])['carrier']
 
                               phone_number_info = {
@@ -1008,9 +1009,9 @@ Resources:
                                   "phone_number_country_code": number_summary['PhoneNumberCountryCode'],
                                   "phone_number_carrier" : phone_number_carrier
                                   }
-                              
+
                               phone_numbers.append(phone_number_info)
-                  
+
                               logger.debug(f"📞 Phone Number: {number_summary['PhoneNumber']}")
                               logger.debug(f"📞 Phone Number Type: {number_summary['PhoneNumberType']}")
                               logger.debug(f"📞 Phone Number Carrier: {phone_number_carrier}")
@@ -1026,9 +1027,9 @@ Resources:
                                   "phone_number_carrier" : phone_number_carrier,
                                   "error": str(e)
                               })
-                  
+
                   return phone_numbers
-                  
+
               except Exception as e:
                   print(f"Error listing phone numbers: {str(e)}")
                   return []
@@ -1038,7 +1039,7 @@ Resources:
               """
               Count phone numbers by type using ListPhoneNumbersV2
               """
-              
+
               # Initialize counters for all possible phone number types
               phone_type_counts = {
                   'TOLL_FREE': 0,
@@ -1049,29 +1050,29 @@ Resources:
                   'THIRD_PARTY_DID': 0,
                   'SHORT_CODE': 0
               }
-              
+
               # Additional tracking
               country_counts = Counter()
               status_counts = Counter()
               total_numbers = 0
-              
+
               try:
                   # Use ListPhoneNumbersV2 for accurate type identification
                   paginator = connect_client.get_paginator('list_phone_numbers_v2')
-                  
+
                   for page in paginator.paginate(InstanceId=instance_id):
                       for number_summary in page.get('ListPhoneNumbersSummaryList', []):
                           total_numbers += 1
-                          
+
                           # Count by type
                           phone_type = number_summary.get('PhoneNumberType', 'UNKNOWN')
                           if phone_type in phone_type_counts:
                               phone_type_counts[phone_type] += 1
-                          
+
                           # Count by country
                           country_code = number_summary.get('PhoneNumberCountryCode', 'UNKNOWN')
                           country_counts[country_code] += 1
-                          
+
                           # Get status information if available
                           try:
                               detailed_info = connect_client.describe_phone_number(
@@ -1082,7 +1083,7 @@ Resources:
                           except Exception as e:
                               logger.error(f"Is this Error getting status for {number_summary['PhoneNumberId']}: {str(e)}")
                               status_counts['UNKNOWN'] += 1
-                  
+
                   # Add additional information to the counts
                   phone_type_counts['_metadata'] = {
                       'total_numbers': total_numbers,
@@ -1091,9 +1092,9 @@ Resources:
                       'countries_count': len(country_counts),
                       'most_common_country': country_counts.most_common(1)[0] if country_counts else None
                   }
-                  
+
                   return phone_type_counts
-                  
+
               except Exception as e:
                   logger.error(f"Error listing phone numbers: {str(e)}")
                   return phone_type_counts
@@ -1103,11 +1104,11 @@ Resources:
               """
               Validate a phone number using Amazon Pinpoint Phone Number Validation API
               to get service provider information for Amazon Connect phone numbers.
-              
+
               Args:
                   phone_number (str): The phone number to validate (include country code)
                   iso_country_code (str, optional): Two-character ISO 3166-1 alpha-2 country code
-              
+
               Returns:
                   dict: Phone number validation response with carrier and other details
               """
@@ -1118,17 +1119,17 @@ Resources:
                           'PhoneNumber': phone_number
                       }
                   }
-                  
+
                   # Add country code if provided
                   if iso_country_code:
                       request_params['NumberValidateRequest']['IsoCountryCode'] = iso_country_code
-                  
+
                   # Call the phone number validation API
                   response = pinpoint_client.phone_number_validate(**request_params)
-                  
+
                   # Extract validation details
                   validation_result = response['NumberValidateResponse']
-                  
+
                   # Format the result for easy consumption
                   result = {
                       'original_number': validation_result.get('OriginalPhoneNumber'),
@@ -1145,13 +1146,13 @@ Resources:
                       'zip_code': validation_result.get('ZipCode'),
                       'is_valid': validation_result.get('PhoneType') != 'INVALID'
                   }
-                  
+
                   return result
-                  
+
               except ClientError as e:
                   error_code = e.response['Error']['Code']
                   error_message = e.response['Error']['Message']
-                  
+
                   return {
                       'error': True,
                       'error_code': error_code,
@@ -1170,10 +1171,10 @@ Resources:
               """
               Simple function to get a specific Amazon Connect metric
               """
-              
+
               end_time = datetime.utcnow()
               start_time = end_time - timedelta(days=days_back)
-              
+
               try:
                   response = cloudwatch_client.get_metric_statistics(
                       Namespace='AWS/Connect',
@@ -1187,34 +1188,34 @@ Resources:
                       Period=3600,  # 1 hour
                       Statistics=['Sum', 'Average', 'Maximum']
                   )
-                  
+
                   datapoints = response['Datapoints']
-                  
+
                   if datapoints:
                       # Sort by timestamp
                       datapoints.sort(key=lambda x: x['Timestamp'])
-                      
+
                       logger.debug(f"📊 {metric_name} (last {days_back} days):")
-                      
+
                       if 'Sum' in datapoints[0]:
                           total = sum(dp.get('Sum', 0) for dp in datapoints)
                           logger.debug(f"   Total: {total:.0f}")
-                      
+
                       if 'Average' in datapoints[0]:
                           avg_values = [dp.get('Average', 0) for dp in datapoints]
                           overall_avg = sum(avg_values) / len(avg_values)
                           logger.debug(f"   Average: {overall_avg:.2f}")
-                      
+
                       if 'Maximum' in datapoints[0]:
                           max_values = [dp.get('Maximum', 0) for dp in datapoints]
                           peak = max(max_values)
                           logger.debug(f"   Peak: {peak:.0f}")
-                      
+
                       return datapoints
                   else:
                       logger.debug(f"No data found for {metric_name}")
                       return []
-                      
+
               except Exception as e:
                   logger.error(f"Error getting {metric_name}: {str(e)}")
                   return []
@@ -1222,11 +1223,11 @@ Resources:
           """Get Amazon Connect Flows"""
           def get_contact_flows(instance_id):
               """Get all contact flows for the instance"""
-              
+
               try:
                   contact_flows = {}
                   paginator = connect_client.get_paginator('list_contact_flows')
-                  
+
                   for page in paginator.paginate(InstanceId=instance_id):
                       for flow in page['ContactFlowSummaryList']:
                           contact_flows[flow['Id']] = {
@@ -1234,9 +1235,9 @@ Resources:
                               'type': flow['ContactFlowType'],
                               'arn': flow['Arn']
                           }
-                  
+
                   return contact_flows
-                  
+
               except Exception as e:
                   logger.debug(f"Error getting contact flows: {str(e)}")
                   return {}
@@ -1244,7 +1245,7 @@ Resources:
           """Log Insights Query"""
           def run_log_insights_query(logs_client, log_group, query, start_time, end_time):
               """Execute CloudWatch Log Insights query"""
-              
+
               try:
                   # Start the query
                   response = logs_client.start_query(
@@ -1253,27 +1254,27 @@ Resources:
                       endTime=int(end_time.timestamp()),
                       queryString=query
                   )
-                  
+
                   query_id = response['queryId']
-                  
+
                   # Wait for query to complete
                   max_attempts = 30
                   attempt = 0
-                  
+
                   while attempt < max_attempts:
                       time.sleep(2)
-                      
+
                       result = logs_client.get_query_results(queryId=query_id)
-                      
+
                       if result['status'] == 'Complete':
                           return result['results']
                       elif result['status'] == 'Failed':
                           raise Exception(f"Query failed: {result.get('statistics', {})}")
-                      
+
                       attempt += 1
-                  
+
                   raise Exception("Query timeout")
-                  
+
               except Exception as e:
                   logger.error(f"Error running query: {str(e)}")
                   return []
@@ -1281,7 +1282,7 @@ Resources:
           """Contact Flow Errors"""
           def analyze_contact_flow_errors(logs_client, instance_id, start_time, end_time, contact_flows):
               """Analyze contact flow errors using CloudWatch Log Insights"""
-                  
+
               # Query for all contact flow errors
               error_query = """
               fields @timestamp, ContactId, ContactFlowId, ContactFlowModuleType, LogLevel, Message, Parameters
@@ -1289,10 +1290,10 @@ Resources:
               | stats count() as ErrorCount by ContactFlowId, ContactFlowModuleType, Message
               | sort ErrorCount desc
               """
-              
+
               try:
                   error_results = run_log_insights_query(logs_client, log_group, error_query, start_time, end_time)
-                  
+
                   # Query for detailed error information
                   detailed_error_query = """
                   fields @timestamp, ContactId, ContactFlowId, ContactFlowModuleType, LogLevel, Message, Parameters
@@ -1300,34 +1301,34 @@ Resources:
                   | sort @timestamp desc
                   | limit 100
                   """
-                  
+
                   detailed_errors = run_log_insights_query(logs_client, log_group, detailed_error_query, start_time, end_time)
-                  
+
                   # Process and categorize errors
                   processed_errors = process_error_results(error_results, detailed_errors, contact_flows)
-                  
+
                   return processed_errors
-                  
+
               except Exception as e:
                   logger.error(f"Error analyzing contact flow errors: {str(e)}")
                   return {}
 
           """Find contact flows where 'Set logging behavior' block is not enabled (set to TRUE)"""
           def find_flows_without_logging_enabled(instance_id):
-              
+
               flows_without_logging = []
-              
+
               try:
                   # Get all contact flows
                   paginator = connect_client.get_paginator('list_contact_flows')
                   page_iterator = paginator.paginate(InstanceId=instance_id)
-                  
+
                   for page in page_iterator:
                       for flow_summary in page['ContactFlowSummaryList']:
                           flow_id = flow_summary['Id']
                           flow_name = flow_summary['Name']
                           flow_type = flow_summary['ContactFlowType']
-                          
+
                           logger.debug(f"Analyzing flow: {flow_name} (ID: {flow_id})")
 
                           try:
@@ -1336,7 +1337,7 @@ Resources:
                                   InstanceId=instance_id,
                                   ContactFlowId=flow_id
                               )
-                              
+
                               # Parse the flow content (JSON string)
                               flow_content = json.loads(flow_details['ContactFlow']['Content'])
 
@@ -1356,15 +1357,15 @@ Resources:
                                   logger.debug(f"❌ Logging is not enabled for flow: {flow_name} (ID: {flow_id})")
                               else :
                                   logger.debug(f"✅ Logging is enabled for flow: {flow_name} (ID: {flow_id})")
-                                  
+
                           except Exception as e:
                               logger.error(f"Error analyzing flow {flow_name}: {str(e)}")
                               continue
-                              
+
               except Exception as e:
                   logger.error(f"Error listing contact flows: {str(e)}")
                   return []
-              
+
               return flows_without_logging
 
           """Check if the flow contains a 'Set logging behavior' block with logging enabled"""
@@ -1374,7 +1375,7 @@ Resources:
 
               # Look for actions in the flow content
               actions = flow_content.get('Actions', [])
-              
+
               for action in actions:
                   # Check if this is a Set logging behavior block
                   action_type = action.get('Type', '')
@@ -1394,6 +1395,7 @@ Resources:
 
               # If no SetLoggingBehavior block found or none are enabled
               return state
+
           """Main Handler"""
           def lambda_handler(event, context):
               try:
@@ -1434,7 +1436,7 @@ Resources:
                   logger.debug(f"Found {len(quotas)} Amazon Connect service quotas:\n")
 
                   for quota in quotas:
-                     
+
                       if quota['QuotaName'] == "Contact flows per instance":
                           cfs_string = "Contact flows per instance - Current Limit : " + str(quota['Value'])  + ". "
                           cfs_limit = str(quota['Value'])
@@ -1445,16 +1447,16 @@ Resources:
 
                       elif quota['QuotaName'] == "Queues per instance":
                           queues_limit = str(quota['Value'])
-                      
+
                       elif quota['QuotaName'] == "Security profiles per instance":
                           sec_profiles_limit = str(quota['Value'])
-                      
+
                       elif quota['QuotaName'] == "Users per instance":
                           users_limit = str(quota['Value'])
-                      
+
                       elif quota['QuotaName'] == "Amazon Lex bots per instance":
                           botsv1_limit = str(quota['Value'])
-                      
+
                       elif quota['QuotaName'] == "Phone numbers per instance":
                           phone_limit = str(quota['Value'])
 
@@ -1476,7 +1478,7 @@ Resources:
                       else:
                           quota_name = quota['QuotaName']
                           quota_value = quota['Value']
-                          
+
                   if not instance_id:
                       return {
                           'statusCode': 400,
@@ -1485,7 +1487,11 @@ Resources:
 
                   #Describe Instance and create the intial html output
                   html_output = describe_connect_to_html(instance_id)
-                  
+
+                  #Module runtime duration
+                  duration = time.time() - lambda_exec_start_time 
+                  logger.info(f"Describe Amazon Connect Module execution time: {duration}")
+                  lambda_exec_intermediate_time = time.time()
 
                   html_output += """<h2>Resilience</h2>
                                       <p>Within each AWS Region Amazon Connect instance is created with a minimum of 3 AZs. When you create an Amazon Connect instance, that instance is propagated across those AZs in an active-active-active configuration. If there is a failure in one AZ, that node is taken out of rotation without impacting production. This architecture allows you to perform maintenance, release new features, and expand infrastructure without requiring any downtime.
@@ -1523,7 +1529,13 @@ Resources:
                       html_output += f"""<h4>Recommendation</h4>
                                   <ul> In the US, you should use Amazon Connect telephony services for US toll-free numbers, allowing you to route toll-free traffic across multiple suppliers in an active-active fashion at no additional charge. In situations where you are forwarding inbound traffic to an Amazon Connect phone number, you should request redundant DID or Toll-Free numbers across multiple telephony providers. If you are claiming or porting multiple DID or Toll-Free numbers outside of the US, you should request that those numbers be claimed or ported to a variety of telephony providers for increased resiliency.
                                   Refer <a href="https://docs.aws.amazon.com/connect/latest/adminguide/operational-excellence.html#prepare" target="_blank"> documentation </a> for more information</ul>"""
-            
+
+
+
+                  #Module runtime duration
+                  duration = time.time() - lambda_exec_intermediate_time
+                  logger.info(f"Carrier Diversity execution time: {duration}")
+                  lambda_exec_intermediate_time = time.time()
 
                   #Get Usage%
                   cfs_percentage = current_utilization(instance_id, "ContactFlows") / int(float(cfs_limit)) * 100
@@ -1569,6 +1581,11 @@ Resources:
                       </body>
                       """
 
+                  #Module runtime duration
+                  duration = time.time() - lambda_exec_intermediate_time
+                  logger.info(f"Connect Usage vs Limits Module execution time: {duration}")
+                  lambda_exec_intermediate_time = time.time()
+
                   html_output += f"""
                       <html>
                       <body>
@@ -1578,7 +1595,7 @@ Resources:
                       """
 
                   flows_without_logging = find_flows_without_logging_enabled(instance_id)
-                  
+
                   if flows_without_logging.__len__() == 0:
                       html_output += f"""<br> No contact flows without logging enabled found."""
                   else:
@@ -1586,7 +1603,7 @@ Resources:
                              <br>{flows_without_logging.__len__()} contact flows without logging enabled found.<br><br>
                               <table style="width: 80%">
                                       <tr><th>Flow Name</th><th>Flow ID</th><th>Flow Type</th><th>Status</th><th>State</th></tr>"""
-                      
+
                       for flow in flows_without_logging:
                           html_output += f"""
                                       <tr><td>{flow['FlowName']}</td><td>{flow['FlowId']}</td><td>{flow['FlowType']}</td><td>{flow['Status']}</td><td>{flow['State']}</td></tr>
@@ -1598,12 +1615,22 @@ Resources:
                           <li>Learn more about contact flow <a href="https://docs.aws.amazon.com/connect/latest/adminguide/about-contact-flow-logs.html" target="_blank">logging</a>.</li>
                       </ul>
                       """
-            
+
+                 #Module runtime duration
+                  duration = time.time() - lambda_exec_intermediate_time
+                  logger.info(f"Contact Flows without Logging Module execution time: {duration}")
+                  lambda_exec_intermediate_time = time.time()
+
                   html_output += f"""
                       </div><div class="section">
                       <br><h3>Concurrent Calls Analysis</h3>
                       """
                   html_output += summarize_concurrent_calls(instance_id, days_back)
+
+                  #Module runtime duration
+                  duration = time.time() - lambda_exec_intermediate_time
+                  logger.info(f"Concurrent Calls Analysis Module execution time: {duration}")
+                  lambda_exec_intermediate_time = time.time()
 
                   html_output += f"""</div>
                       <div class="section">
@@ -1611,17 +1638,33 @@ Resources:
                       """
                   html_output += summarize_missed_calls(instance_id, days_back)
 
+                  #Module runtime duration
+                  duration = time.time() - lambda_exec_intermediate_time
+                  logger.info(f"Missed Calls Analysis Module execution time: {duration}")
+                  lambda_exec_intermediate_time = time.time()
+
+
                   html_output += f"""</div>
                       <div class="section">
                       <br><h3>Throttled Calls Analysis</h3>
                       """
                   html_output += summarize_throttled_calls(instance_id, days_back)
 
-                  html_output += f"""</div>
-                      <div class="section">
-                      <br><h3>Amazon Connect API Throttling (Account level)</h3>
-                      """
-                  html_output += summarize_amazon_api_throttles(instance_id, account_id, days_back, aws_region)
+                  #Module runtime duration
+                  duration = time.time() - lambda_exec_intermediate_time
+                  logger.info(f"Throttled Calls Analysis Module execution time: {duration}")
+                  lambda_exec_intermediate_time = time.time()
+
+                  #html_output += f"""</div>
+                  #    <div class="section">
+                  #    <br><h3>Amazon Connect API Throttling (Account level)</h3>
+                  #    """
+                  #html_output += summarize_amazon_api_throttles(instance_id, account_id, days_back, aws_region)
+
+                  #Module runtime duration
+                  #duration = time.time() - lambda_exec_intermediate_time
+                  #logger.info(f"API Throttling Analysis Module execution time: {duration}")
+                  #lambda_exec_intermediate_time = time.time()
 
                   #Phone Number Analysis
                   phone_type_counts = count_phone_numbers_by_type(connect_client, instance_id)
@@ -1647,26 +1690,26 @@ Resources:
                               html_output += (f"High toll-free usage: {toll_free_percentage:.1f}% of numbers are toll-free (potential cost optimization opportunity)")
                           elif toll_free_percentage < 20:
                               html_output += (f"<br>Low toll-free usage: Only {toll_free_percentage:.1f}% are toll-free (consider customer accessibility)")
-                      
+
                       # Check for DID usage
                       did_count = phone_type_counts.get('DID', 0)
                       if did_count > 0:
                           did_percentage = (did_count / total_numbers) * 100
                           html_output += (f"<br>DID numbers provide local presence: {did_percentage:.1f}% of total numbers")
-                      
+
                       # Check for international presence
                       metadata = phone_type_counts.get('_metadata', {})
                       countries_count = metadata.get('countries_count', 0)
                       if countries_count > 1:
                           html_output += (f"<br>International presence: Numbers in {countries_count} countries")
-                      
+
                       # Check for special types
                       uifn_count = phone_type_counts.get('UIFN', 0)
                       short_code_count = phone_type_counts.get('SHORT_CODE', 0)
-                      
+
                       if uifn_count > 0:
                           html_output += (f"<br>Global accessibility: {uifn_count} UIFN numbers for international toll-free access")
-                      
+
                       if short_code_count > 0:
                           html_output += (f"<br>SMS capability: {short_code_count} short codes for messaging services")    
 
@@ -1698,6 +1741,10 @@ Resources:
                           </ul>
                           """
 
+                  #Module runtime duration
+                  duration = time.time() - lambda_exec_intermediate_time
+                  logger.info(f"Phone Number Analysis Module execution time: {duration}")
+                  lambda_exec_intermediate_time = time.time()
 
                   html_output += f"""</div>
                       </html>
@@ -1710,9 +1757,14 @@ Resources:
                   get_connect_metric_simple(instance_id, 'MissedCalls', days_back)
                   get_connect_metric_simple(instance_id, 'QueueSize', days_back)
 
+
+                  # Get Date timestamp
+                  now_utc = datetime.now(timezone.utc)
+                  date_time = now_utc.strftime("%m%d%Y_%H%M%S")
+
                   # Upload to S3
-                  upload_string_to_s3(html_output, s3_reporting_bucket, 'my-connect-review.html','text/html') 
-                  
+                  upload_string_to_s3(html_output, s3_reporting_bucket, 'my-connect-review_'+date_time+'_.html','text/html') 
+
                   lambda_exec_end_time = time.time()
                   duration = lambda_exec_end_time - lambda_exec_start_time
                   print(f"Lambda execution time: {duration}")
@@ -1721,7 +1773,7 @@ Resources:
                           'statusCode': 200,
                           'body': json.dumps({'success': f'Amazon Connect Ops Review document succesfully generated. Execution duration: {duration} seconds")'})
                       }
-                  
+
               except Exception as e:
                   exc_type, exc_obj, exc_tb = sys.exc_info()
                   lineno = exc_tb.tb_lineno
@@ -1737,7 +1789,7 @@ Resources:
                           'message': str(traceback.print_exc())
                       })
                   }
-        
+
   # CloudWatch Log Group for Lambda
   LambdaLogGroup:
     Type: AWS::Logs::LogGroup
