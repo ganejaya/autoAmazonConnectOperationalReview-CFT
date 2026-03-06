@@ -1,0 +1,104 @@
+name: Update Lambda Code from Source Repository
+
+on:
+  repository_dispatch:
+    types: [lambda-code-updated]
+
+jobs:
+  update-cft-template:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout CFT repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Display trigger information
+        run: |
+          echo "🔔 Lambda code update triggered"
+          echo "Source Repository: ${{ github.event.client_payload.lambda_repo }}"
+          echo "Branch: ${{ github.event.client_payload.lambda_branch }}"
+          echo "Commit: ${{ github.event.client_payload.commit_short_sha }}"
+          echo "Author: ${{ github.event.client_payload.commit_author }}"
+          echo "Message: ${{ github.event.client_payload.commit_message }}"
+          echo "Date: ${{ github.event.client_payload.commit_date }}"
+
+      - name: Update CFT template with latest Lambda code
+        run: |
+          python3 scripts/update_cft_lambda.py \
+            --remote \
+            --repo-url "https://github.com/${{ github.event.client_payload.lambda_repo }}.git" \
+            --branch "${{ github.event.client_payload.lambda_branch }}" \
+            --remote-path "${{ github.event.client_payload.lambda_file_path }}" \
+            --cft-template "CFT-AmazonConnectOperationsReview.yml" \
+            --no-backup
+
+      - name: Check for changes
+        id: check_changes
+        run: |
+          if git diff --quiet CFT-AmazonConnectOperationsReview.yml; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ No changes detected in CFT template"
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "✅ Changes detected in CFT template"
+          fi
+
+      - name: Create Pull Request
+        if: steps.check_changes.outputs.has_changes == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: |
+            Update Lambda code from ${{ github.event.client_payload.lambda_repo }}@${{ github.event.client_payload.commit_short_sha }}
+            
+            Source commit: ${{ github.event.client_payload.commit_message }}
+            Author: ${{ github.event.client_payload.commit_author }}
+            Date: ${{ github.event.client_payload.commit_date }}
+          branch: update-lambda-${{ github.event.client_payload.commit_short_sha }}
+          delete-branch: true
+          title: "Update Lambda function code from ${{ github.event.client_payload.commit_short_sha }}"
+          body: |
+            ## 🔄 Automated Lambda Code Update
+            
+            This PR updates the embedded Lambda function code in the CloudFormation template.
+            
+            ### Source Information
+            - **Repository**: ${{ github.event.client_payload.lambda_repo }}
+            - **Branch**: ${{ github.event.client_payload.lambda_branch }}
+            - **Commit**: ${{ github.event.client_payload.commit_sha }}
+            - **Author**: ${{ github.event.client_payload.commit_author }}
+            - **Date**: ${{ github.event.client_payload.commit_date }}
+            
+            ### Source Commit Message
+            ```
+            ${{ github.event.client_payload.commit_message }}
+            ```
+            
+            ### Changes
+            - Updated `CFT-AmazonConnectOperationsReview.yml` with latest Lambda code
+            
+            ### Next Steps
+            1. Review the Lambda code changes
+            2. Validate the CloudFormation template
+            3. Merge this PR
+            4. Deploy the updated stack
+            
+            ---
+            *This PR was automatically created by GitHub Actions*
+          labels: |
+            automated
+            lambda-update
+          reviewers: |
+            ${{ github.repository_owner }}
+
+      - name: Summary
+        if: steps.check_changes.outputs.has_changes == 'true'
+        run: |
+          echo "✅ Pull request created successfully"
+          echo "Review and merge the PR to deploy the updated Lambda code"
