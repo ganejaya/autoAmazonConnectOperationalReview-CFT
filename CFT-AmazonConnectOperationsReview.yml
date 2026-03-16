@@ -89,7 +89,6 @@ Resources:
           S3_REPORTING_BUCKET: !Ref AmazonS3ForReports
       Code:
         ZipFile: |
-          # Amazon Connect Operational Review - Monolithic Lambda Function
           import boto3
           import json
           import logging
@@ -131,6 +130,9 @@ Resources:
 
           # Initialize CloudWatch logs client
           pinpoint_client = boto3.client('pinpoint')
+
+          # Initialize Service Quotas client
+          service_quotas_client = boto3.client('service-quotas')
 
           """Parse instance_id and aws_region from Amazon Connect instance ARN"""
           def parse_connect_instance_arn(instance_arn):
@@ -174,24 +176,44 @@ Resources:
                   'full_arn': instance_arn
               }
 
-          """Get various Service Quota elements for Amazon Connect"""
-          def get_connect_service_quotas():
-              """Retrieve all Amazon Connect service quotas"""
+          def get_connect_service_quota(service_quotas_client, service_code, quota_code, context_id=None):
+              """
+              Get a single service quota name and value.
+              Falls back to default if no instance-specific quota exists.
+
+              Returns:
+                  tuple: (quota_name, quota_value)
+              """
               try:
-                  service_quotas = boto3.client('service-quotas')
-                  quotas = []
+                  params = {'ServiceCode': service_code, 'QuotaCode': quota_code}
+                  if context_id:
+                      params['ContextId'] = context_id
 
-                  # Use paginator to get all quotas
-                  paginator = service_quotas.get_paginator('list_service_quotas')
+                  time.sleep(1)
+                  response = service_quotas_client.get_service_quota(**params)
+                  quota_name = response['Quota']['QuotaName']
+                  quota_value = response['Quota']['Value']
+                  quota_unit = response['Quota']['Unit']
+                  logger.debug(f"  Retrieved quota {quota_name}: {quota_value} {quota_unit}")
 
-                  for page in paginator.paginate(ServiceCode='connect'):
-                      quotas.extend(page['Quotas'])
-
-                  return quotas
+                  return quota_name, quota_value
 
               except ClientError as e:
-                  logger.error(f"Error retrieving service quotas: {e}")
-                  return []
+                  error_code = e.response['Error']['Code']
+
+                  # Fall back to default quota (no context_id) for instance-specific errors
+                  if error_code in ('NoSuchResourceException', 'IllegalArgumentException') and context_id:
+                      try:
+                          response = service_quotas_client.get_service_quota(
+                              ServiceCode=service_code, QuotaCode=quota_code
+                          )
+                          return response['Quota']['QuotaName'], response['Quota']['Value']
+                      except ClientError as fallback_error:
+                          logger.error(f"  Fallback error for {quota_code}: {fallback_error.response['Error']['Code']}")
+                          return quota_code, None
+
+                  logger.error(f"  Error for {quota_code}: {error_code}")
+                  return quota_name, None
 
           def get_color_by_percentage(percentage):
               """Return color code based on percentage value"""
@@ -306,28 +328,6 @@ Resources:
                           'message': str(e)
                       })
                   }
-
-          """Service Quota value for those service quota"""
-          def get_connect_service_quota(instance_id_arn, quota_code):
-              """Retrieve all Amazon Connect service quotas"""
-              try:
-
-                  response = quota_client.get_service_quota(
-                  ServiceCode='connect',
-                  QuotaCode=quota_code,
-                  ContextId=instance_id_arn # Optional, for resource-level quotas
-                  )
-
-                  quota_value = response['Quota']['Value']
-                  quota_unit = response['Quota']['Unit']
-
-                  logger.debug(f"For Amazon Connect quota_code {quota_code} value is {quota_value} with unit {quota_unit}")
-
-                  return quota_value
-
-              except ClientError as e:
-                  logger.error(f"Error retrieving service quotas: {e}")
-                  return []
 
           """class for segregating JSON data."""
           class JSONSegregator:
@@ -979,7 +979,15 @@ Resources:
                   return html_content
 
               except Exception as e:
-                  return f"<html><body><h1>Error</h1><p>Error describing instance: {escape(str(e))}</p></body></html>"
+                  import sys
+                  return {
+                      'statusCode': 400,
+                      'body': json.dumps({
+                          'error': 'AWS API Error',
+                          'line': sys.exc_info()[2].tb_lineno if sys.exc_info()[2] else None,
+                          'message': f'Error describing instance: {str(e)}'
+                      })
+                  }
 
           """Get all phone numbers for the instance"""
           def get_phone_numbers_with_basic_details(connect_client, instance_id):
@@ -1078,7 +1086,12 @@ Resources:
                               detailed_info = connect_client.describe_phone_number(
                                   PhoneNumberId=number_summary['PhoneNumberId']
                               )
-                              status = detailed_info['ClaimedPhoneNumberSummary'].get('PhoneNumberStatus', 'UNKNOWN')
+                              raw_status = detailed_info['ClaimedPhoneNumberSummary'].get('PhoneNumberStatus', 'UNKNOWN')
+                              # PhoneNumberStatus can be a dict like {'Status': 'CLAIMED'} or a plain string
+                              if isinstance(raw_status, dict):
+                                  status = raw_status.get('Status', 'UNKNOWN')
+                              else:
+                                  status = raw_status
                               status_counts[status] += 1
                           except Exception as e:
                               logger.error(f"Is this Error getting status for {number_summary['PhoneNumberId']}: {str(e)}")
@@ -1424,69 +1437,17 @@ Resources:
                   start_time = end_time - timedelta(days=days_back)
 
                   # Parse Amazon connect instance info from environment variables
-                  parsed = parse_connect_instance_arn(os.environ.get('CONNECT_INSTANCE_ARN'))
+                  instance_arn = os.environ.get('CONNECT_INSTANCE_ARN')
+                  parsed = parse_connect_instance_arn(instance_arn)
                   instance_id = str(parsed['instance_id'])
                   aws_region = str(parsed['aws_region'])
                   account_id = str(parsed['account_id'])
-
-                  logger.info (f"Instance Details parsed from env variables: {instance_id}, AWS Region: {aws_region}, Account ID: {account_id}")
-
-                  # Current Quota Limits
-                  quotas = get_connect_service_quotas()
-                  logger.debug(f"Found {len(quotas)} Amazon Connect service quotas:\n")
-
-                  for quota in quotas:
-
-                      if quota['QuotaName'] == "Contact flows per instance":
-                          cfs_string = "Contact flows per instance - Current Limit : " + str(quota['Value'])  + ". "
-                          cfs_limit = str(quota['Value'])
-                          logger.debug(f"{cfs_string}")
-
-                      elif quota['QuotaName'] == "Routing profiles per instance":
-                          rps_limit = str(quota['Value'])
-
-                      elif quota['QuotaName'] == "Queues per instance":
-                          queues_limit = str(quota['Value'])
-
-                      elif quota['QuotaName'] == "Security profiles per instance":
-                          sec_profiles_limit = str(quota['Value'])
-
-                      elif quota['QuotaName'] == "Users per instance":
-                          users_limit = str(quota['Value'])
-
-                      elif quota['QuotaName'] == "Amazon Lex bots per instance":
-                          botsv1_limit = str(quota['Value'])
-
-                      elif quota['QuotaName'] == "Phone numbers per instance":
-                          phone_limit = str(quota['Value'])
-
-                      elif quota['QuotaName'] == "Amazon Lex V2 bot aliases per instance":
-                          botsv2_limit = str(quota['Value'])
-
-                      elif quota['QuotaName'] == "Quick connects per instance":
-                          qc_limit = str(quota['Value'])
-
-                      elif quota['QuotaName'] == "Hours of operation per instance":
-                          hrs_operation_limit = str(quota['Value'])
-
-                      elif quota['QuotaName'] == "Users per instance":
-                          users_limit = str(quota['Value'])
-
-                      elif quota['QuotaName'] == "Amazon Lex bots per instance":
-                          bots_limit = str(quota['Value'])
-
-                      else:
-                          quota_name = quota['QuotaName']
-                          quota_value = quota['Value']
-
-                  if not instance_id:
-                      return {
-                          'statusCode': 400,
-                          'body': json.dumps({'error': 'Connect Instance ID is required'})
-                      }
+                  logger.info (f"Instance Details parsed from env variables: {instance_arn}, AWS Region: {aws_region}, Account ID: {account_id}")
 
                   #Describe Instance and create the intial html output
                   html_output = describe_connect_to_html(instance_id)
+                  if isinstance(html_output, dict):
+                      return html_output
 
                   #Module runtime duration
                   duration = time.time() - lambda_exec_start_time 
@@ -1537,18 +1498,58 @@ Resources:
                   logger.info(f"Carrier Diversity execution time: {duration}")
                   lambda_exec_intermediate_time = time.time()
 
+                  # Get current quota limits
+                  service_code = 'connect'
+                  logger.debug(f"Getting current quota limits for instance: {instance_arn}")
+
+                  cfs_limit = str(get_connect_service_quota(service_quotas_client, service_code, 'L-22922690', instance_arn)[1])
+                  logger.info(f" Contact flows per instance: {cfs_limit}")
+
+                  #Routing Profile
+                  rps_limit = str(get_connect_service_quota(service_quotas_client, service_code, 'L-D3E7BE26', instance_arn)[1])
+                  logger.debug(f"Routing profiles per instance: {rps_limit}")
+
+                  #Security Profiles
+                  sec_profiles_limit = str(get_connect_service_quota(service_quotas_client, service_code, 'L-F325A715', instance_arn)[1])
+                  logger.debug(f"Security profiles per instance: {sec_profiles_limit}")
+
+                  #Queues
+                  queues_limit = str(get_connect_service_quota(service_quotas_client, service_code, 'L-19A87C94', instance_arn)[1])
+                  logger.debug(f"Queues per instance: {queues_limit}")
+
+                  #Users
+                  users_limit = str(get_connect_service_quota(service_quotas_client, service_code, 'L-9A46857E', instance_arn)[1])
+                  logger.debug(f"Users per instance: {users_limit}")
+
+                  #Amazon Lex bots v1 and v2
+                  botsv1_limit = str(get_connect_service_quota(service_quotas_client, service_code, 'L-B93A6612', instance_arn)[1])
+                  botsv2_limit = str(get_connect_service_quota(service_quotas_client, service_code, 'L-CCEA7427', instance_arn)[1])
+                  logger.debug(f"Lex bots per instance and lex bots V2 alias: {botsv1_limit} and {botsv2_limit}")
+
+                  #Phone Number per instance
+                  phone_limit = str(get_connect_service_quota(service_quotas_client, service_code, 'L-8F812903', instance_arn)[1])
+                  logger.debug(f"Phone numbers per instance: {phone_limit}")
+
+                  #Quick connects per instance
+                  qc_limit = str(get_connect_service_quota(service_quotas_client, service_code, 'L-68BBE2E8', instance_arn)[1])
+                  logger.debug(f"Quick connects per instance: {qc_limit}")
+
+                  #Hours of operation per instance
+                  hrs_operation_limit = str(get_connect_service_quota(service_quotas_client, service_code, 'L-20CD02F7', instance_arn)[1])
+                  logger.debug(f"Hours of operation per instance: {hrs_operation_limit}")
+
                   #Get Usage%
-                  cfs_percentage = current_utilization(instance_id, "ContactFlows") / int(float(cfs_limit)) * 100
-                  rps_percentage = current_utilization(instance_id, "RoutingProfiles") / int(float(rps_limit)) * 100
-                  queues_percentage = current_utilization(instance_id, "Queues") / int(float(queues_limit)) * 100
-                  sec_profiles_percentage = current_utilization(instance_id, "SecurityProfiles") / int(float(sec_profiles_limit)) * 100
-                  users_percentage = current_utilization(instance_id, "Users") / int(float(users_limit)) * 100
-                  botsv1_percentage = current_utilization(instance_id, "LexBotsV1") / int(float(botsv1_limit)) * 100
-                  botsv2_percentage = current_utilization(instance_id, "LexBotsV2") / int(float(botsv2_limit)) * 100
-                  phone_percentage = current_utilization(instance_id, "PhoneNumbers") / int(float(phone_limit)) * 100
-                  qc_percentage = current_utilization(instance_id, "QuickConnects") / int(float(qc_limit)) * 100
-                  hrs_operation_percentage = current_utilization(instance_id, "HoursOfOperation") / int(float(hrs_operation_limit)) * 100
-                  users_percentage = current_utilization(instance_id, "Users") / int(float(users_limit)) * 100
+                  cfs_percentage = round(current_utilization(instance_id, "ContactFlows") / int(float(cfs_limit)) * 100, 1)
+                  rps_percentage = round(current_utilization(instance_id, "RoutingProfiles") / int(float(rps_limit)) * 100, 1)
+                  queues_percentage = round(current_utilization(instance_id, "Queues") / int(float(queues_limit)) * 100, 1)
+                  sec_profiles_percentage = round(current_utilization(instance_id, "SecurityProfiles") / int(float(sec_profiles_limit)) * 100, 1)
+                  users_percentage = round(current_utilization(instance_id, "Users") / int(float(users_limit)) * 100, 1)
+                  botsv1_percentage = round(current_utilization(instance_id, "LexBotsV1") / int(float(botsv1_limit)) * 100, 1)
+                  botsv2_percentage = round(current_utilization(instance_id, "LexBotsV2") / int(float(botsv2_limit)) * 100, 1)
+                  phone_percentage = round(current_utilization(instance_id, "PhoneNumbers") / int(float(phone_limit)) * 100, 1)
+                  qc_percentage = round(current_utilization(instance_id, "QuickConnects") / int(float(qc_limit)) * 100, 1)
+                  hrs_operation_percentage = round(current_utilization(instance_id, "HoursOfOperation") / int(float(hrs_operation_limit)) * 100, 1)
+                  users_percentage = round(current_utilization(instance_id, "Users") / int(float(users_limit)) * 100, 1)
 
                   #HTML Output - Connect Usage Vs Limits
                   html_output += f"""
@@ -1763,7 +1764,7 @@ Resources:
                   date_time = now_utc.strftime("%m%d%Y_%H%M%S")
 
                   # Upload to S3
-                  upload_string_to_s3(html_output, s3_reporting_bucket, 'my-connect-review_'+date_time+'_.html','text/html') 
+                  upload_string_to_s3(html_output, s3_reporting_bucket, 'connect-review_'+instance_id+'_'+aws_region+'_'+date_time+'.html','text/html') 
 
                   lambda_exec_end_time = time.time()
                   duration = lambda_exec_end_time - lambda_exec_start_time
@@ -1782,7 +1783,7 @@ Resources:
                   logger.error(f"Error on line: {lineno}")
                   logger.error(f"Traceback: {traceback.print_exc()}")
                   return {
-                      'statusCode': 500,
+                      'statusCode': 400,
                       'body': json.dumps({
                           'error': 'AWS API Error',
                           'line': lineno,
