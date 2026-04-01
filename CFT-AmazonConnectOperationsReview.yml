@@ -227,7 +227,7 @@ Resources:
                   return "#00FF00"  # Green - Normal
 
           """Get Current utilization for Amazon Connect"""
-          def current_utilization (instance_id, metric_name):
+          def old_current_utilization (instance_id, metric_name):
 
               try:
                   matched_value = metric_name
@@ -328,6 +328,48 @@ Resources:
                           'message': str(e)
                       })
                   }
+
+          def count_paginated(client, method: str, list_key: str, **kwargs) -> int:
+              """Generic paginator counter for any Connect list_* API."""
+              total = 0
+              paginator = client.get_paginator(method)
+              for page in paginator.paginate(**kwargs):
+                  total += len(page[list_key])
+              return total
+
+          """Get Current utilization for Amazon Connect"""
+          def current_utilization (instance_id: str, metric: str) -> int:
+              """
+              Return the current utilization count for a single metric.
+
+              Args:
+                  instance_id: Amazon Connect instance id
+                  metric: One of Users, ContactFlows, PhoneNumbers, Queues, RoutingProfiles,
+                          SecurityProfiles, HoursOfOperation, QuickConnects, LexBotsV1, LexBotsV2
+
+              Returns:
+                  int count, or raises ValueError for unknown metric
+              """
+
+              metric_map = {
+                  'Users':              lambda: count_paginated(connect_client, 'list_users',              'UserSummaryList',              InstanceId=instance_id),
+                  'ContactFlows':       lambda: count_paginated(connect_client, 'list_contact_flows',      'ContactFlowSummaryList',       InstanceId=instance_id),
+                  'PhoneNumbers':       lambda: count_paginated(connect_client, 'list_phone_numbers_v2',   'ListPhoneNumbersSummaryList',  InstanceId=instance_id),
+                  'Queues':             lambda: count_paginated(connect_client, 'list_queues',             'QueueSummaryList',             InstanceId=instance_id, QueueTypes=['STANDARD']),
+                  'RoutingProfiles':    lambda: count_paginated(connect_client, 'list_routing_profiles',   'RoutingProfileSummaryList',    InstanceId=instance_id),
+                  'SecurityProfiles':   lambda: count_paginated(connect_client, 'list_security_profiles',  'SecurityProfileSummaryList',   InstanceId=instance_id),
+                  'HoursOfOperation':   lambda: count_paginated(connect_client, 'list_hours_of_operations','HoursOfOperationSummaryList',  InstanceId=instance_id),
+                  'QuickConnects':      lambda: count_paginated(connect_client, 'list_quick_connects',     'QuickConnectSummaryList',      InstanceId=instance_id),
+                  'LexBotsV1':          lambda: count_paginated(connect_client, 'list_bots',               'LexBots',                     InstanceId=instance_id, LexVersion='V1'),
+                  'LexBotsV2':          lambda: count_paginated(connect_client, 'list_bots',               'LexBots',                     InstanceId=instance_id, LexVersion='V2'),
+                  'UserHierarchyGroups': lambda: count_paginated(connect_client, 'list_user_hierarchy_groups', 'UserHierarchyGroupSummaryList', InstanceId=instance_id),
+              }
+
+              if metric not in metric_map:
+                  raise ValueError(f"Unknown metric '{metric}'. Valid options: {list(metric_map.keys())}")
+
+              return metric_map[metric]()
+
 
           """class for segregating JSON data."""
           class JSONSegregator:
@@ -1538,6 +1580,11 @@ Resources:
                   hrs_operation_limit = str(get_connect_service_quota(service_quotas_client, service_code, 'L-20CD02F7', instance_arn)[1])
                   logger.debug(f"Hours of operation per instance: {hrs_operation_limit}")
 
+                  #User hierarchy groups per instance
+                  hierarchy_limit = str(get_connect_service_quota(service_quotas_client, service_code, 'L-D68AAAE4', instance_arn)[1])
+                  logger.debug(f"User hierarchy groups per instance: {hierarchy_limit}")
+
+
                   #Get Usage%
                   cfs_percentage = round(current_utilization(instance_id, "ContactFlows") / int(float(cfs_limit)) * 100, 1)
                   rps_percentage = round(current_utilization(instance_id, "RoutingProfiles") / int(float(rps_limit)) * 100, 1)
@@ -1550,6 +1597,7 @@ Resources:
                   qc_percentage = round(current_utilization(instance_id, "QuickConnects") / int(float(qc_limit)) * 100, 1)
                   hrs_operation_percentage = round(current_utilization(instance_id, "HoursOfOperation") / int(float(hrs_operation_limit)) * 100, 1)
                   users_percentage = round(current_utilization(instance_id, "Users") / int(float(users_limit)) * 100, 1)
+                  hierarchy_percentage = round(current_utilization(instance_id, "UserHierarchyGroups") / int(float(hierarchy_limit)) * 100, 1)
 
                   #HTML Output - Connect Usage Vs Limits
                   html_output += f"""
@@ -1570,6 +1618,7 @@ Resources:
                               <tr><th>PhoneNumbers per instance</th><td>{escape(str(current_utilization(instance_id, "PhoneNumbers")))}</td><td>{escape(phone_limit)}</td><td style="background-color: {get_color_by_percentage(phone_percentage)} ;">{escape(str(phone_percentage))}%</td></tr>
                               <tr><th>QuickConnects per instance</th><td>{escape(str(current_utilization(instance_id, "QuickConnects")))}</td><td>{escape(qc_limit)}</td></td><td style="background-color: {get_color_by_percentage(qc_percentage)} ;">{escape(str(qc_percentage))}%</td></tr>
                               <tr><th>HoursOfOperation per instance</th><td>{escape(str(current_utilization(instance_id, "HoursOfOperation")))}</td><td>{escape(hrs_operation_limit)}</td></td><td style="background-color: {get_color_by_percentage(hrs_operation_percentage)} ;">{escape(str(hrs_operation_percentage))}%</td></tr>
+                              <tr><th>User Hierarchy Groups per instance</th><td>{escape(str(current_utilization(instance_id, "UserHierarchyGroups")))}</td><td>{escape(hierarchy_limit)}</td></td><td style="background-color: {get_color_by_percentage(hierarchy_percentage)} ;">{escape(str(hierarchy_percentage))}%</td></tr>
                          </table>
                       </div>
                       <h4>Recommendations</h4>
