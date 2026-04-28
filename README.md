@@ -1,3 +1,117 @@
+# Amazon Connect Automated Operational Review
+
+An automated operational health assessment tool for Amazon Connect instances. Generates a comprehensive HTML report covering security, resilience, capacity, observability, and cost considerations.
+
+## Overview
+
+This solution deploys a Lambda function that analyzes your Amazon Connect instance and produces a detailed HTML report uploaded to S3. The report includes an executive summary with pass/fail/warn checks across multiple pillars.
+
+## Report Sections
+
+| Pillar | Checks |
+|--------|--------|
+| **Security** | Identity Management (SAML), S3 Data Encryption, Streaming Encryption |
+| **Resilience** | Multi-AZ Architecture, Global Resiliency (ACGR), Carrier Diversity |
+| **Operational Excellence** | API Throttling, Contact Flow Logging, KVS Retention Period |
+| **Capacity Analysis** | Instance Resource Limits, Concurrency Limits, Account Level API Limits |
+| **Observability** | CloudWatch Alarm Validation (Connect & KDS), Missed Calls Analysis |
+| **Cost** | Phone Number Mix Analysis, Channel Usage Breakdown |
+
+## Additional Features
+
+- Data Storage & Streaming configuration audit
+- KMS encryption validation for S3 and streaming destinations
+- Kinesis Data Streams alarm validation against AWS best practices
+- Account-level API rate quota review with modified quota highlighting
+- Color-coded capacity utilization (Green/Orange/Red)
+- Executive summary with clickable anchors to each section
+
+## Deployment
+
+### Prerequisites
+
+- An Amazon Connect instance
+- An S3 bucket for report output
+- AWS CLI configured with appropriate permissions
+
+### Deploy via CloudFormation
+
+```bash
+aws cloudformation deploy \
+  --template-file CFT-AmazonConnectOperationsReview.yml \
+  --stack-name amazon-connect-ops-review \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+    AmazonConnectInstanceARN=arn:aws:connect:<region>:<account-id>:instance/<instance-id> \
+    AmazonConnectCloudWatchLogGroup=/aws/connect/<instance-name> \
+    AmazonS3ForReports=<your-s3-bucket-name>
+```
+
+### Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `AmazonConnectInstanceARN` | ARN of your Amazon Connect instance |
+| `AmazonConnectCloudWatchLogGroup` | CloudWatch Log Group for the Connect instance |
+| `AmazonS3ForReports` | S3 bucket name for uploading reports |
+| `Boto3LayerArn` | (Optional) Lambda Layer ARN with newer boto3 for DataTables, Notifications, Workspaces metrics |
+
+### Optional: Boto3 Lambda Layer
+
+Some newer Connect APIs (ListDataTables, ListNotifications, ListWorkspaces, SearchEmailAddresses) require a newer boto3 version than the Lambda runtime provides. To enable these metrics:
+
+```bash
+mkdir -p python
+pip install boto3 -t python/
+zip -r boto3-layer.zip python/
+```
+
+Upload as a Lambda Layer in the AWS Console, then provide the Layer ARN in the `Boto3LayerArn` parameter.
+
+## IAM Permissions
+
+The CloudFormation template creates a Lambda execution role with:
+
+- `AWSLambdaBasicExecutionRole` — CloudWatch Logs
+- `AmazonConnectReadOnlyAccess` — Connect instance read access
+- `AWSCloudTrail_ReadOnlyAccess` — API throttling analysis
+- `ServiceQuotasReadOnlyAccess` — Quota limit retrieval
+- `CloudWatchReadOnlyAccess` — Metrics and alarms
+- `mobiletargeting:PhoneNumberValidate` — Carrier diversity analysis
+- `s3:PutObject` — Report upload to S3
+- `connect:SearchEmailAddresses`, `connect:ListDataTables`, `connect:ListNotifications`, `connect:ListWorkspaces` — Additional Connect APIs
+
+## Execution
+
+The Lambda function can be invoked manually or on a schedule. It has a 15-minute timeout and 256MB memory allocation.
+
+```bash
+aws lambda invoke \
+  --function-name amazonConnectOperationalReview-auto \
+  --payload '{}' \
+  output.json
+```
+
+The HTML report is uploaded to: `s3://<bucket>/connect-review_<instance-alias>_<region>_<timestamp>.html`
+
+## Report Lookback Period
+
+The report analyzes the last 30 days of CloudWatch metrics data by default for:
+- Concurrent call/chat/email/task peak usage
+- Missed calls trends
+- API throttling events via CloudTrail
+
+## Architecture
+
+```
+Lambda Function
+  ├── Amazon Connect APIs (instance config, flows, phone numbers, storage)
+  ├── Service Quotas API (instance & account-level limits)
+  ├── CloudWatch API (metrics, alarms)
+  ├── CloudTrail API (API throttling events)
+  ├── Pinpoint API (phone number carrier validation)
+  └── S3 (report upload)
+```
 
 # CloudFormation Template
 
