@@ -89,7 +89,12 @@ Resources:
           S3_REPORTING_BUCKET: !Ref AmazonS3ForReports
       Code:
         ZipFile: |
-          # Amazon Connect Operational Review Lambda function for data collection, analysis and report generation
+          # Amazon Connect Operational Review - Automated Report Generator
+          #
+          # Collects instance configuration, contact flow analysis, phone number inventory,
+          # queue/routing metrics, CloudWatch alarms, CloudTrail audit events, and service
+          # quota utilization from an Amazon Connect instance, then generates an HTML
+          # operational review report and uploads it to a designated S3 bucket.
 
           import boto3
           import json
