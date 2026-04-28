@@ -1,0 +1,80 @@
+name: Validate and Deploy CFT
+
+on:
+  pull_request:
+    paths:
+      - 'CFT-AmazonConnectOperationsReview-Updated.yml'
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'CFT-AmazonConnectOperationsReview-Updated.yml'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: Validate CloudFormation template
+        run: |
+          echo "🔍 Validating CloudFormation template..."
+          aws cloudformation validate-template \
+            --template-body file://CFT-AmazonConnectOperationsReview-Updated.yml
+          echo "✅ Template validation successful"
+
+      - name: Check Python syntax in embedded Lambda
+        run: |
+          echo "🐍 Extracting and validating Lambda code..."
+          # Extract Lambda code from CFT (between ZipFile: | and next top-level key)
+          awk '/ZipFile: \|/,/^  [^ ]/' CFT-AmazonConnectOperationsReview-Updated.yml | \
+            grep -v "ZipFile: |" | \
+            grep -v "^  [^ ]" | \
+            sed 's/^          //' > /tmp/extracted_lambda.py
+          
+          # Validate Python syntax
+          python3 -m py_compile /tmp/extracted_lambda.py
+          echo "✅ Lambda code syntax is valid"
+
+  deploy:
+    needs: validate
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: Deploy CloudFormation stack
+        run: |
+          echo "🚀 Deploying CloudFormation stack..."
+          aws cloudformation deploy \
+            --stack-name ${{ secrets.STACK_NAME || 'amazon-connect-ops-review' }} \
+            --template-file CFT-AmazonConnectOperationsReview-Updated.yml \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset
+          echo "✅ Stack deployment complete"
+
+      - name: Get stack outputs
+        run: |
+          echo "📋 Stack outputs:"
+          aws cloudformation describe-stacks \
+            --stack-name ${{ secrets.STACK_NAME || 'amazon-connect-ops-review' }} \
+            --query 'Stacks[0].Outputs' \
+            --output table

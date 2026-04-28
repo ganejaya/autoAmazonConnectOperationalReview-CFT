@@ -9,12 +9,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout CFT repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.CFT_REPO_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Checkout code repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ github.event.client_payload.lambda_repo }}
           ref: ${{ github.event.client_payload.lambda_branch }}
@@ -56,9 +56,9 @@ jobs:
 
       - name: Create Pull Request
         if: steps.check_changes.outputs.has_changes == 'true'
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@v7
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.CFT_REPO_PAT || secrets.GITHUB_TOKEN }}
           commit-message: |
             Update Lambda code from ${{ github.event.client_payload.lambda_repo }}@${{ github.event.client_payload.commit_short_sha }}
             
